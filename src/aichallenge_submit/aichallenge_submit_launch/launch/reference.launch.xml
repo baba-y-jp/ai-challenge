@@ -136,6 +136,8 @@
     <param name="lookahead_min_distance" value="3.5"/>
     <param name="speed_proportional_gain" value="1.0"/>
     <param name="steering_tire_angle_gain" value="$(var steering_tire_angle_gain_var)"/>
+    <param name="curvature_gain" value="0.5"/>
+    <param name="lookahead_max_distance" value="15.0"/>
 
     <remap from="input/kinematics" to="/localization/kinematic_state"/>
     <remap from="input/trajectory" to="/planning/scenario_planning/trajectory"/>

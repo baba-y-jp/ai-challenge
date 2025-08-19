@@ -23,7 +23,12 @@ SimplePurePursuit::SimplePurePursuit()
   speed_proportional_gain_(declare_parameter<float>("speed_proportional_gain", 1.0)),
   use_external_target_vel_(declare_parameter<bool>("use_external_target_vel", false)),
   external_target_vel_(declare_parameter<float>("external_target_vel", 0.0)),
-  steering_tire_angle_gain_(declare_parameter<float>("steering_tire_angle_gain", 1.0))
+  steering_tire_angle_gain_(declare_parameter<float>("steering_tire_angle_gain", 1.0)),
+
+  // 曲率コンストラクタの追加
+  curvature_gain_(declare_parameter<float>("curvature_gain", 0.5)),
+  // 最大先行距離の追加
+  lookahead_max_distance_(declare_parameter<float>("lookahead_max_distance", 10.0))
 {
   pub_cmd_ = create_publisher<AckermannControlCommand>("output/control_cmd", 1);
   pub_raw_cmd_ = create_publisher<AckermannControlCommand>("output/raw_control_cmd", 1);
@@ -52,6 +57,32 @@ AckermannControlCommand zeroAckermannControlCommand(rclcpp::Time stamp)
   return cmd;
 }
 
+// 3点から曲率を計算するヘルパ関数
+double calcCurvatureFrom3Points(
+  const geometry_msgs::msg::Point & p_prev, const geometry_msgs::msg::Point & p_curr,
+  const geometry_msgs::msg::Point & p_next)
+{
+  const double a = std::hypot(p_curr.x - p_prev.x, p_curr.y - p_prev.y);
+  const double b = std::hypot(p_next.x - p_curr.x, p_next.y - p_curr.y);
+  const double c = std::hypot(p_prev.x - p_next.x, p_prev.y - p_next.y);
+  const double s = (a + b + c) / 2.0;
+  const double area_squared = s * (s - a) * (s - b) * (s - c);
+
+  // 3点がほぼ一直線上にある場合 (面積が非常に小さい) は曲率を0とする
+  if (area_squared < 1e-6) {
+    return 0.0;
+  }
+  const double area = std::sqrt(area_squared);
+
+  // 外接円の半径 R = abc / (4 * Area)
+  // 曲率 kappa = 1/R = 4 * Area / (abc)
+  if (a * b * c < 1e-6) {
+    return 0.0;
+  }
+  return 4.0 * area / (a * b * c);
+}
+
+
 void SimplePurePursuit::onTimer()
 {
   // check data
@@ -79,7 +110,18 @@ void SimplePurePursuit::onTimer()
 
   // calc lateral control
   //// calc lookahead distance
-  double lookahead_distance = lookahead_gain_ * target_longitudinal_vel + lookahead_min_distance_;
+  // double lookahead_distance = lookahead_gain_ * target_longitudinal_vel + lookahead_min_distance_;
+  // 新しい先行距離計算ロジック
+  const int curvature_calc_point_dist = 5; // 5点先の点を使う
+  double kappa = calcTrajectoryCurvature(closet_traj_point_idx, curvature_calc_point_dist);
+  
+    // 2. 曲率と速度に基づいて先行距離を計算
+  double lookahead_distance =
+    (lookahead_gain_ / (curvature_gain_ * std::abs(kappa) + 1.0)) * target_longitudinal_vel +
+    lookahead_min_distance_;
+  
+  // 3. 先行距離に上限を設定
+  lookahead_distance = std::min(lookahead_distance, lookahead_max_distance_);
   //// calc center coordinate of rear wheel
   double rear_x = odometry_->pose.pose.position.x -
                   wheel_base_ / 2.0 * std::cos(odometry_->pose.pose.orientation.z);
@@ -114,6 +156,32 @@ void SimplePurePursuit::onTimer()
   pub_raw_cmd_->publish(cmd);
 }
 
+// 軌道上の指定されたインデックス周辺の曲率を計算する
+double SimplePurePursuit::calcTrajectoryCurvature(
+  const size_t point_idx, const int curvature_calc_point_dist)
+{
+  if (trajectory_->points.size() < 3) {
+    return 0.0;
+  }
+
+  const size_t prev_idx =
+    (point_idx < static_cast<size_t>(curvature_calc_point_dist))
+     ? 0
+      : point_idx - curvature_calc_point_dist;
+  const size_t next_idx = (point_idx + curvature_calc_point_dist >= trajectory_->points.size())
+                           ? trajectory_->points.size() - 1
+                            : point_idx + curvature_calc_point_dist;
+
+  // 3点が同じでないことを確認
+  if (prev_idx == point_idx || point_idx == next_idx) {
+    return 0.0;
+  }
+
+  return calcCurvatureFrom3Points(
+    trajectory_->points.at(prev_idx).pose.position, trajectory_->points.at(point_idx).pose.position,
+    trajectory_->points.at(next_idx).pose.position);
+}
+
 bool SimplePurePursuit::subscribeMessageAvailable()
 {
   if (!odometry_) {
@@ -130,7 +198,11 @@ bool SimplePurePursuit::subscribeMessageAvailable()
     }
   return true;
 }
+
 }  // namespace simple_pure_pursuit
+
+
+
 
 int main(int argc, char const * argv[])
 {
