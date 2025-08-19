@@ -51,11 +51,16 @@ class SimplePurePursuit : public rclcpp::Node {
   const bool use_external_target_vel_;
   const double external_target_vel_;
   const double steering_tire_angle_gain_;
+  // curveの導入
+  const double curvature_gain_;
+  // 最大先行距離
+  const double lookahead_max_distance_;
 
 
  private:
   void onTimer();
   bool subscribeMessageAvailable();
+  double calcTrajectoryCurvature(const size_t point_idx, const int curvature_calc_point_dist);
 };
 
 }  // namespace simple_pure_pursuit
